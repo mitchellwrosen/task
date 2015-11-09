@@ -9,8 +9,8 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     ProgressBar
-                     , Task
+  exposed-modules:     Turtle.Task
+  other-modules:       Turtle.ProgressBar
   build-depends:       base >= 4.7 && < 5
                      , ansi-terminal
                      , async

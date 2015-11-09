@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module ProgressBar
+module Turtle.ProgressBar
     ( ProgressBar
     , withProgressBar
     , completeProgressBar

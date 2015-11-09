@@ -5,12 +5,11 @@
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Task
-    ( Task(..)
-    , runTask
+module Turtle.Task
+    ( task
     ) where
 
-import ProgressBar
+import Turtle.ProgressBar
 
 import           Control.Concurrent
 import           Control.Concurrent.Async
@@ -24,44 +23,39 @@ import qualified Data.Text                    as T
 import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           Data.Time.Format
-import           GHC.Generics                 (Generic)
 import           Prelude                      hiding (FilePath)
 import           System.Exit
 import           System.IO                    (hClose)
 import qualified System.Process               as Process
 import           Turtle
 
-data Task = Task
-    { taskInput   :: [Text]
-    , taskCommand :: Text
-    } deriving (Show, Generic, Hashable)
-
-instance IsString Task where
-    fromString str = Task [] (T.pack str)
-
 -- | Run a task and return whether or not it failed.
-runTask :: Task -> IO Bool
-runTask task = do
-    (log_file, mestimate, taskAction) <- runTask_ task
+task :: Text -> Shell Text -> IO Bool
+task cmd stdin_shell = do
+    (log_file, mestimate, taskAction) <- prepareTask cmd stdin_shell
 
     let log_file_txt = T.pack (fpToString log_file)
         estimate = maybe 60 id mestimate
 
-    withProgressBar (taskCommand task) estimate $ \bar ->
+    withProgressBar cmd estimate $ \bar ->
         taskAction >>= \case
             Left ex -> do
-                crashProgressBar bar (format (s%" failed with exception: "%s%" (log: "%s%")") (taskCommand task) (T.pack (show ex)) log_file_txt)
+                crashProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_file_txt)
                 pure False
             Right (ExitFailure n) -> do
-                crashProgressBar bar (format (s%" failed with exit code: "%d%" (log: "%s%")") (taskCommand task) n log_file_txt)
+                crashProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_file_txt)
                 pure False
             Right ExitSuccess -> do
-                completeProgressBar bar (format (s%" completed (log: "%s%")") (taskCommand task) log_file_txt)
+                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_file_txt)
                 pure True
 
-runTask_ :: Task -> IO (FilePath, Maybe Double, IO (Either SomeException ExitCode))
-runTask_ task@(Task inp cmd) = do
-    let h = hash task
+-- | Given a task command and stdin, return its log filepath, estimated time in
+-- seconds, and an action to actually run it.
+prepareTask :: Text -> Shell Text -> IO (FilePath, Maybe Double, IO (Either SomeException ExitCode))
+prepareTask cmd stdin_shell = do
+    stdin_lines <- fold stdin_shell (Fold (\f x -> \xs -> f (x:xs)) id (\f -> f []))
+
+    let h = hash (cmd, stdin_lines)
 
     mktree (".tasks" </> hashToFilePath h </> "logs")
 
@@ -100,12 +94,16 @@ runTask_ task@(Task inp cmd) = do
         action :: IO ExitCode
         action = do
             withLogfile log_fp $ \(log_handle, logStdout, logStderr) -> do
-                outhandle log_handle (pure ("Command: " <> taskCommand task) <|> "Stdin lines:" <|> select (taskInput task) <|> "--------------------")
+                outhandle log_handle $
+                        pure ("Command: " <> cmd)
+                    <|> "Stdin lines:"
+                    <|> select stdin_lines
+                    <|> "--------------------"
 
                 bracket open close $ \(hIn, hOut, hErr, ph) -> do
                     let feedIn :: IO ()
                         feedIn = do
-                            outhandle hIn (select inp)
+                            outhandle hIn (select stdin_lines)
                             tryClose hIn
 
                         feedOut :: IO ()
