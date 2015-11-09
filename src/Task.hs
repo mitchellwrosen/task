@@ -5,35 +5,30 @@
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Task where
+module Task
+    ( Task(..)
+    , runTask
+    ) where
+
+import ProgressBar
 
 import           Control.Concurrent
 import           Control.Concurrent.Async
-import           Control.Concurrent.MVar
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Managed
-import           Data.ByteString              (ByteString)
 import qualified Data.ByteString              as BS
-import           Data.Function                (fix)
 import           Data.Hashable
-import           Data.IORef
 import           Data.Serialize               (encode, decode)
-import           Data.Text                    (Text)
 import qualified Data.Text                    as T
-import qualified Data.Text.Encoding           as T
-import qualified Data.Text.IO                 as T
 import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           Data.Time.Format
 import           GHC.Generics                 (Generic)
 import           Prelude                      hiding (FilePath)
-import           System.Console.ANSI
-import           System.Console.AsciiProgress
 import           System.Exit
-import           System.IO                    (Handle, hClose)
+import           System.IO                    (hClose)
 import qualified System.Process               as Process
-import           Text.Printf
 import           Turtle
 
 data Task = Task
@@ -42,64 +37,27 @@ data Task = Task
     } deriving (Show, Generic, Hashable)
 
 instance IsString Task where
-    fromString s = Task [] (T.pack s)
+    fromString str = Task [] (T.pack str)
 
-data Result = Result
-    { resultTask    :: Task
-    , resultLogfile :: String
-    , resultOutcome :: Either SomeException ExitCode
-    } deriving Show
-
-printResult :: Result -> IO ()
-printResult Result{..} =
-    case resultOutcome of
-        Left ex -> do
-            red
-            echo (format (s%" failed with exception: "%s%" (log: "%s%")") (taskCommand resultTask) (T.pack (show ex)) (T.pack resultLogfile))
-            reset
-            exit (ExitFailure 1)
-        Right (ExitFailure n) -> do
-            red
-            echo (format (s%" failed with exit code: "%d%" (log: "%s%")") (taskCommand resultTask) n (T.pack resultLogfile))
-            reset
-            exit (ExitFailure 1)
-        Right ExitSuccess -> do
-            green
-            echo (format (s%" completed successfully (log: "%s%")") (taskCommand resultTask) (T.pack resultLogfile))
-            reset
-  where
-    red   = setSGR [SetColor Foreground Vivid Red]
-    green = setSGR [SetColor Foreground Dull Green]
-    reset = setSGR [Reset]
-
-tickLen = 0.10
-
-runTask :: Task -> IO Result
+-- | Run a task and return whether or not it failed.
+runTask :: Task -> IO Bool
 runTask task = do
     (log_file, mestimate, taskAction) <- runTask_ task
-    let estimate = maybe 60 id mestimate
-    pg <- makeProgressBar estimate
-    forkIO . fix $ \loop -> do
-        done <- isComplete pg
-        unless done $ do
-            threadDelay (floor (tickLen * 1000 * 1000))
-            tick pg
-            loop
 
-    result <- taskAction
-    complete pg
-    pure (Result task (fpToString log_file) result)
-  where
-    makeProgressBar :: Double -> IO ProgressBar
-    makeProgressBar n =
-        let name_width = 10 in
-        newProgressBar def
-            { pgFormat = T.unpack (T.justifyLeft name_width ' ' (T.take name_width (taskCommand task)))
-                         ++ " :percent :bar| :eta remaining"
-            , pgCompletedChar = '█'
-            , pgTotal = floor (n / tickLen)
-            , pgOnCompletion = T.putStr ((taskCommand task) <> " completed")
-            }
+    let log_file_txt = T.pack (fpToString log_file)
+        estimate = maybe 60 id mestimate
+
+    withProgressBar (taskCommand task) estimate $ \bar ->
+        taskAction >>= \case
+            Left ex -> do
+                crashProgressBar bar (format (s%" failed with exception: "%s%" (log: "%s%")") (taskCommand task) (T.pack (show ex)) log_file_txt)
+                pure False
+            Right (ExitFailure n) -> do
+                crashProgressBar bar (format (s%" failed with exit code: "%d%" (log: "%s%")") (taskCommand task) n log_file_txt)
+                pure False
+            Right ExitSuccess -> do
+                completeProgressBar bar (format (s%" completed (log: "%s%")") (taskCommand task) log_file_txt)
+                pure True
 
 runTask_ :: Task -> IO (FilePath, Maybe Double, IO (Either SomeException ExitCode))
 runTask_ task@(Task inp cmd) = do
@@ -115,9 +73,9 @@ runTask_ task@(Task inp cmd) = do
 
     hInLock  <- newEmptyMVar
     let tryClose :: Handle -> IO ()
-        tryClose h = do
+        tryClose hdl = do
             first <- tryPutMVar hInLock ()
-            when first (hClose h)
+            when first (hClose hdl)
 
         open :: IO (Handle, Handle, Handle, Process.ProcessHandle)
         open = do
@@ -132,7 +90,7 @@ runTask_ task@(Task inp cmd) = do
                     }
 
         close :: (Handle, Handle, Handle, Process.ProcessHandle) -> IO ()
-        close (hIn, hOut, hErr, ph) = do
+        close (hIn, _, _, ph) = do
             tryClose hIn
             Process.terminateProcess ph
 
@@ -158,7 +116,7 @@ runTask_ task@(Task inp cmd) = do
 
                     started <- getPOSIXTime
 
-                    feedIn `concurrently` feedOut `concurrently` feedErr
+                    _ <- feedIn `concurrently` feedOut `concurrently` feedErr
 
                     code <- Process.waitForProcess ph
                     when (code == ExitSuccess) $ do
@@ -179,7 +137,7 @@ hashToFilePath :: Int -> FilePath
 hashToFilePath = fromText . T.pack . show
 
 fpToString :: FilePath -> String
-fpToString fp = let Right fp' = toText fp in T.unpack fp'
+fpToString path = let Right path' = toText path in T.unpack path'
 
 withLogfile :: FilePath -> ((Handle, Text -> IO (), Text -> IO ()) -> IO r) -> IO r
 withLogfile path act = do
