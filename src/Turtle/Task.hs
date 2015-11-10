@@ -139,15 +139,15 @@ task_ onStdout cmd stdin_shell mtitle = do
     withProgressBar title estimate $ \bar ->
         (fmap Right action `catch` \(ex :: SomeException) -> pure (Left ex)) >>= \case
             Left ex -> do
-                completeProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_fp_txt) Red
+                completeProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") title (T.pack (show ex)) log_fp_txt) Red
                 pure Nothing
             Right (_, ExitFailure n) -> do
-                completeProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_fp_txt) Red
+                completeProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") title n log_fp_txt) Red
                 pure Nothing
             Right (result, ExitSuccess) -> do
                 wrote_to_stderr <- readIORef wrote_to_stderr_ref
                 let color = if wrote_to_stderr then Yellow else Green
-                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_fp_txt) color
+                completeProgressBar bar (format (s%" completed ("%s%")") title log_fp_txt) color
                 pure (Just result)
 
 readPrevTimes :: Int -> IO [Double]

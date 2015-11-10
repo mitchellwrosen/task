@@ -1,5 +1,6 @@
--- | A drop-in replacement for `Turtle`, with "thread-safe" echo/err. Currently
--- does not implement shell/proc with concurrent process handles.
+-- | A drop-in replacement for `Turtle`, with "thread-safe" echo, err, stdout,
+-- and stderr. Note that process spawning functions (proc, shell, etc) are not
+-- reimplemented with concurrent process handles and are thus not "thread-safe".
 --
 -- Also exports Turtle.Task, for convenience.
 
@@ -15,7 +16,7 @@ module Turtle.Concurrent
     ) where
 
 import System.Console.Concurrent
-import Turtle hiding (proc, shell, procStrict, shellStrict, echo, err, inproc, inshell, stdout, stderr)
+import Turtle hiding (echo, err, stdout, stderr)
 import Turtle.Task
 
 echo :: MonadIO m => Text -> m ()

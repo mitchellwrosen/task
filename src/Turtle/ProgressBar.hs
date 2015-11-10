@@ -41,7 +41,6 @@ withProgressBar label total act =
             let label_len = w `div` 10 in
             T.justifyLeft label_len ' ' (T.take (label_len - 1) label)
 
-
         setConsoleRegion bar_region $ do
             elapsed <- readTVar elapsedVar
 
