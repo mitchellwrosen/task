@@ -36,8 +36,9 @@ import           System.Random
 import           Turtle
 
 data Verbosity
-    = Verbose
-    | Concise
+    = Concise
+    | Verbose
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 task :: Text       -- ^ Command to run.
      -> Shell Text -- ^ Standard input.
