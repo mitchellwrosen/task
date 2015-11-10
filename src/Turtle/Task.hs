@@ -7,6 +7,7 @@
 
 module Turtle.Task
     ( task
+    , taskStrict
     ) where
 
 import Turtle.ProgressBar
@@ -18,41 +19,36 @@ import           Control.Monad
 import           Control.Monad.Managed
 import qualified Data.ByteString              as BS
 import           Data.Hashable
+import           Data.Maybe
 import           Data.Serialize               (encode, decode)
 import qualified Data.Text                    as T
 import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           Data.Time.Format
-import           Prelude                      hiding (FilePath)
+import           Prelude                      hiding (FilePath, log)
 import           System.Exit
 import           System.IO                    (hClose)
 import qualified System.Process               as Process
 import           Turtle
 
--- | Run a task and return whether or not it failed.
 task :: Text -> Shell Text -> IO Bool
-task cmd stdin_shell = do
-    (log_file, mestimate, taskAction) <- prepareTask cmd stdin_shell
+task cmd stdin_shell = isJust <$> task_ (\sout log -> sh (sout >>= liftIO . log)) cmd stdin_shell
 
-    let log_file_txt = T.pack (fpToString log_file)
-        estimate = maybe 60 id mestimate
+taskStrict :: Text -> Shell Text -> IO (Maybe Text)
+taskStrict cmd stdin_shell = task_ (\sout log -> strict (do
+                                 txt <- sout
+                                 liftIO (log txt)
+                                 pure txt))
+                             cmd
+                             stdin_shell
 
-    withProgressBar cmd estimate $ \bar ->
-        taskAction >>= \case
-            Left ex -> do
-                crashProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_file_txt)
-                pure False
-            Right (ExitFailure n) -> do
-                crashProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_file_txt)
-                pure False
-            Right ExitSuccess -> do
-                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_file_txt)
-                pure True
-
--- | Given a task command and stdin, return its log filepath, estimated time in
--- seconds, and an action to actually run it.
-prepareTask :: Text -> Shell Text -> IO (FilePath, Maybe Double, IO (Either SomeException ExitCode))
-prepareTask cmd stdin_shell = do
+-- | Run a task and return its stdout, stderr, and whether or not it failed.
+task_ :: forall a.
+         (Shell Text -> (Text -> IO ()) -> IO a) -- actin to perform on stdout of process
+      -> Text                                    -- command
+      -> Shell Text                              -- stdin
+      -> IO (Maybe a)
+task_ onStdout cmd stdin_shell = do
     stdin_lines <- fold stdin_shell (Fold (\f x -> \xs -> f (x:xs)) id (\f -> f []))
 
     let h = hash (cmd, stdin_lines)
@@ -62,8 +58,8 @@ prepareTask cmd stdin_shell = do
     prev_times <- readPrevTimes h
     let estimate =
             case prev_times of
-                [] -> Nothing
-                _  -> Just (sum prev_times / fromIntegral (length prev_times))
+                [] -> 60
+                _  -> sum prev_times / fromIntegral (length prev_times)
 
     hInLock  <- newEmptyMVar
     let tryClose :: Handle -> IO ()
@@ -90,9 +86,10 @@ prepareTask cmd stdin_shell = do
 
     now_fp <- fromText . T.pack . formatTime defaultTimeLocale "%F_%X%Q" <$> getCurrentTime
     let log_fp = ".tasks" </> hashToFilePath h </> "logs" </> now_fp
+        log_fp_txt = T.pack (fpToString log_fp)
 
-        action :: IO ExitCode
-        action = do
+        action :: IO (a, ExitCode)
+        action =
             withLogfile log_fp $ \(log_handle, logStdout, logStderr) -> do
                 outhandle log_handle $
                         pure ("Command: " <> cmd)
@@ -106,23 +103,33 @@ prepareTask cmd stdin_shell = do
                             outhandle hIn (select stdin_lines)
                             tryClose hIn
 
-                        feedOut :: IO ()
-                        feedOut = sh (inhandle hOut >>= liftIO . logStdout)
+                        feedOut :: IO a
+                        feedOut = onStdout (inhandle hOut) logStdout
 
                         feedErr :: IO ()
                         feedErr = sh (inhandle hErr >>= liftIO . logStderr)
 
                     started <- getPOSIXTime
 
-                    _ <- feedIn `concurrently` feedOut `concurrently` feedErr
+                    ((_, stdoutTxt), _) <- feedIn `concurrently` feedOut `concurrently` feedErr
 
                     code <- Process.waitForProcess ph
                     when (code == ExitSuccess) $ do
                         now <- getPOSIXTime
                         writePrevTimes h (take 5 (realToFrac (now - started) : prev_times))
-                    pure code
+                    pure (stdoutTxt, code)
 
-    pure (log_fp, estimate, fmap Right action `catch` (pure . Left))
+    withProgressBar cmd estimate $ \bar ->
+        (fmap Right action `catch` \(ex :: SomeException) -> pure (Left ex)) >>= \case
+            Left ex -> do
+                crashProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_fp_txt)
+                pure Nothing
+            Right (_, ExitFailure n) -> do
+                crashProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_fp_txt)
+                pure Nothing
+            Right (result, ExitSuccess) -> do
+                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_fp_txt)
+                pure (Just result)
 
 readPrevTimes :: Int -> IO [Double]
 readPrevTimes h = handle (\(_ :: SomeException) -> pure []) $
