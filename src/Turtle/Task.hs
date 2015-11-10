@@ -19,6 +19,7 @@ import           Control.Monad
 import           Control.Monad.Managed
 import qualified Data.ByteString              as BS
 import           Data.Hashable
+import           Data.IORef
 import           Data.Maybe
 import           Data.Serialize               (encode, decode)
 import qualified Data.Text                    as T
@@ -26,9 +27,11 @@ import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           Data.Time.Format
 import           Prelude                      hiding (FilePath, log)
+import           System.Console.ANSI
 import           System.Exit
 import           System.IO                    (hClose)
 import qualified System.Process               as Process
+import           System.Random
 import           Turtle
 
 task :: Text -> Shell Text -> IO Bool
@@ -56,10 +59,10 @@ task_ onStdout cmd stdin_shell = do
     mktree (".tasks" </> hashToFilePath h </> "logs")
 
     prev_times <- readPrevTimes h
-    let estimate =
-            case prev_times of
-                [] -> 60
-                _  -> sum prev_times / fromIntegral (length prev_times)
+    estimate <-
+        case prev_times of
+            [] -> randomRIO (10, 30)
+            _  -> pure (sum prev_times / fromIntegral (length prev_times))
 
     hInLock  <- newEmptyMVar
     let tryClose :: Handle -> IO ()
@@ -84,6 +87,10 @@ task_ onStdout cmd stdin_shell = do
             tryClose hIn
             Process.terminateProcess ph
 
+    -- Keep track of whether or not we ever wrote to stderr, so we know if we
+    -- should color the output line green (no output) or yellow (output).
+    wrote_to_stderr_ref <- newIORef False
+
     now_fp <- fromText . T.pack . formatTime defaultTimeLocale "%F_%X%Q" <$> getCurrentTime
     let log_fp = ".tasks" </> hashToFilePath h </> "logs" </> now_fp
         log_fp_txt = T.pack (fpToString log_fp)
@@ -107,7 +114,11 @@ task_ onStdout cmd stdin_shell = do
                         feedOut = onStdout (inhandle hOut) logStdout
 
                         feedErr :: IO ()
-                        feedErr = sh (inhandle hErr >>= liftIO . logStderr)
+                        feedErr = sh $ do
+                            txt <- inhandle hErr
+                            liftIO $ do
+                                writeIORef wrote_to_stderr_ref True
+                                logStderr txt
 
                     started <- getPOSIXTime
 
@@ -122,13 +133,15 @@ task_ onStdout cmd stdin_shell = do
     withProgressBar cmd estimate $ \bar ->
         (fmap Right action `catch` \(ex :: SomeException) -> pure (Left ex)) >>= \case
             Left ex -> do
-                crashProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_fp_txt)
+                completeProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_fp_txt) Red
                 pure Nothing
             Right (_, ExitFailure n) -> do
-                crashProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_fp_txt)
+                completeProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") cmd n log_fp_txt) Red
                 pure Nothing
             Right (result, ExitSuccess) -> do
-                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_fp_txt)
+                wrote_to_stderr <- readIORef wrote_to_stderr_ref
+                let color = if wrote_to_stderr then Yellow else Green
+                completeProgressBar bar (format (s%" completed ("%s%")") cmd log_fp_txt) color
                 pure (Just result)
 
 readPrevTimes :: Int -> IO [Double]
