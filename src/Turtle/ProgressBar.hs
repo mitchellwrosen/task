@@ -19,12 +19,14 @@ import           Text.Printf                 (printf)
 
 data ProgressBar = ProgressBar ConsoleRegion (Async ())
 
-completeProgressBar :: ProgressBar -> Text -> Color -> IO ()
-completeProgressBar (ProgressBar region updater) msg color = do
+completeProgressBar :: ProgressBar -> Maybe (Text, Color) -> IO ()
+completeProgressBar (ProgressBar region updater) mmsg = do
     cancel updater
-    finishConsoleRegion region (color' <> msg <> reset)
-  where
-    color' = T.pack (setSGRCode [SetColor Foreground Dull color])
+    case mmsg of
+        Nothing -> pure ()
+        Just (msg, color) -> finishConsoleRegion region (color' <> msg <> reset)
+          where
+            color' = T.pack (setSGRCode [SetColor Foreground Dull color])
 
 withProgressBar :: Text -> Double -> (ProgressBar -> IO r) -> IO r
 withProgressBar label total act =

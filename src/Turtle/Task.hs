@@ -8,6 +8,7 @@
 module Turtle.Task
     ( task
     , taskStrict
+    , Verbosity(..)
     ) where
 
 import Turtle.ProgressBar
@@ -34,29 +35,41 @@ import qualified System.Process               as Process
 import           System.Random
 import           Turtle
 
-task :: Text -> Shell Text -> Maybe Text -> IO Bool
-task cmd stdin_shell title = fmap isJust $
+data Verbosity
+    = Verbose
+    | Concise
+
+task :: Text       -- ^ Command to run.
+     -> Shell Text -- ^ Standard input.
+     -> Maybe Text -- ^ Title (defaults to command run)
+     -> Verbosity  -- ^ Controls behavior of completed progress bars of successful tasks.
+     -> IO Bool    -- ^ Whether or not the task completed successfully.
+task cmd stdin_shell title verbosity = fmap isJust $
     task_ (\sout log -> sh (sout >>= liftIO . log))
           cmd
           stdin_shell
           title
+          verbosity
 
-taskStrict :: Text -> Shell Text -> Maybe Text -> IO (Maybe Text)
-taskStrict cmd stdin_shell title = task_ (\sout log -> strict (do
-                                 txt <- sout
-                                 liftIO (log txt)
-                                 pure txt))
-                             cmd
-                             stdin_shell
-                             title
+taskStrict :: Text -> Shell Text -> Maybe Text -> Verbosity -> IO (Maybe Text)
+taskStrict cmd stdin_shell title verbosity =
+    task_ (\sout log -> strict (do
+              txt <- sout
+              liftIO (log txt)
+              pure txt))
+          cmd
+          stdin_shell
+          title
+          verbosity
 
 task_ :: forall a.
          (Shell Text -> (Text -> IO ()) -> IO a) -- actin to perform on stdout of process
       -> Text                                    -- command
       -> Shell Text                              -- stdin
       -> Maybe Text                              -- title (defaults to command)
+      -> Verbosity
       -> IO (Maybe a)
-task_ onStdout cmd stdin_shell mtitle = do
+task_ onStdout cmd stdin_shell mtitle verbosity = do
     stdin_lines <- fold stdin_shell (Fold (\f x -> \xs -> f (x:xs)) id (\f -> f []))
 
     let h     = hash (cmd, stdin_lines)
@@ -139,15 +152,20 @@ task_ onStdout cmd stdin_shell mtitle = do
     withProgressBar title estimate $ \bar ->
         (fmap Right action `catch` \(ex :: SomeException) -> pure (Left ex)) >>= \case
             Left ex -> do
-                completeProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") title (T.pack (show ex)) log_fp_txt) Red
+                completeProgressBar bar (Just ((format (s%": "%s%" ("%s%")") title (T.pack (show ex)) log_fp_txt), Red))
                 pure Nothing
             Right (_, ExitFailure n) -> do
-                completeProgressBar bar (format (s%" failed with exit code: "%d%" ("%s%")") title n log_fp_txt) Red
+                completeProgressBar bar (Just ((format (s%": "%d%" ("%s%")") title n log_fp_txt), Red))
                 pure Nothing
             Right (result, ExitSuccess) -> do
                 wrote_to_stderr <- readIORef wrote_to_stderr_ref
-                let color = if wrote_to_stderr then Yellow else Green
-                completeProgressBar bar (format (s%" completed ("%s%")") title log_fp_txt) color
+
+                let msg_text = format (s%" ("%s%")") title log_fp_txt
+                    msg = case (wrote_to_stderr, verbosity) of
+                              (True, _) -> Just (msg_text, Yellow)
+                              (_, Verbose) -> Just (msg_text, Green)
+                              _ -> Nothing
+                completeProgressBar bar msg
                 pure (Just result)
 
 readPrevTimes :: Int -> IO [Double]
