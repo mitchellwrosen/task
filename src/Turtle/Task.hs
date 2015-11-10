@@ -34,27 +34,33 @@ import qualified System.Process               as Process
 import           System.Random
 import           Turtle
 
-task :: Text -> Shell Text -> IO Bool
-task cmd stdin_shell = isJust <$> task_ (\sout log -> sh (sout >>= liftIO . log)) cmd stdin_shell
+task :: Text -> Shell Text -> Maybe Text -> IO Bool
+task cmd stdin_shell title = fmap isJust $
+    task_ (\sout log -> sh (sout >>= liftIO . log))
+          cmd
+          stdin_shell
+          title
 
-taskStrict :: Text -> Shell Text -> IO (Maybe Text)
-taskStrict cmd stdin_shell = task_ (\sout log -> strict (do
+taskStrict :: Text -> Shell Text -> Maybe Text -> IO (Maybe Text)
+taskStrict cmd stdin_shell title = task_ (\sout log -> strict (do
                                  txt <- sout
                                  liftIO (log txt)
                                  pure txt))
                              cmd
                              stdin_shell
+                             title
 
--- | Run a task and return its stdout, stderr, and whether or not it failed.
 task_ :: forall a.
          (Shell Text -> (Text -> IO ()) -> IO a) -- actin to perform on stdout of process
       -> Text                                    -- command
       -> Shell Text                              -- stdin
+      -> Maybe Text                              -- title (defaults to command)
       -> IO (Maybe a)
-task_ onStdout cmd stdin_shell = do
+task_ onStdout cmd stdin_shell mtitle = do
     stdin_lines <- fold stdin_shell (Fold (\f x -> \xs -> f (x:xs)) id (\f -> f []))
 
-    let h = hash (cmd, stdin_lines)
+    let h     = hash (cmd, stdin_lines)
+        title = fromMaybe cmd mtitle
 
     mktree (".tasks" </> hashToFilePath h </> "logs")
 
@@ -130,7 +136,7 @@ task_ onStdout cmd stdin_shell = do
                         writePrevTimes h (take 5 (realToFrac (now - started) : prev_times))
                     pure (stdoutTxt, code)
 
-    withProgressBar cmd estimate $ \bar ->
+    withProgressBar title estimate $ \bar ->
         (fmap Right action `catch` \(ex :: SomeException) -> pure (Left ex)) >>= \case
             Left ex -> do
                 completeProgressBar bar (format (s%" failed with exception: "%s%" ("%s%")") cmd (T.pack (show ex)) log_fp_txt) Red
