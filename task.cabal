@@ -17,6 +17,7 @@ library
                      , async
                      , bytestring
                      , cereal
+                     , concurrent-extra
                      , concurrent-output
                      , directory
                      , filepath
